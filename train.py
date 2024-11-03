@@ -24,6 +24,7 @@ from contextlib import nullcontext
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
@@ -129,6 +130,63 @@ def get_batch(split):
     else:
         x, y = x.to(device), y.to(device)
     return x, y
+
+@torch.no_grad()
+def get_bpc():
+    data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    nlls = []
+    prev_end_loc = 0
+    stride = block_size # TODO: make this a config
+    seq_len = len(data)
+
+    batch_size_eval = batch_size * 8
+
+    for begin_loc in range(0, seq_len, stride * batch_size_eval):
+        end_locs = [min(begin_loc + block_size + i * stride, seq_len - 1) for i in range(batch_size_eval)]
+        prev_end_locs = [prev_end_loc] + end_locs[:-1] # prev_end_loc is the end_loc of the previous batch
+
+        # trg_lens is the length of the target sequence for each sequence. Should be the same as stride most of the time
+        # except on the last loop, where it's different, on the first loop, it is equal to block_size, and on the last loop,
+        # depends on the full seq_len.
+        trg_lens = [end_locs[i] - prev_end_locs[i] for i in range(batch_size_eval)]  
+
+        # We don't want to compute the loss for sequences that are 0 length.
+        trg_lens = [trg_len for trg_len in trg_lens if trg_len > 0]
+
+        if len(trg_lens) > 0:
+
+            begin_locs = np.arange(0, batch_size_eval) * stride + begin_loc
+            begin_locs = begin_locs[:len(trg_lens)]
+            end_locs = end_locs[:len(trg_lens)]
+            begin_locs = [min(begin_loc, seq_len - block_size - 1) for begin_loc in begin_locs]
+            x = torch.stack([torch.from_numpy((data[begin_locs[i]:end_locs[i]]).astype(np.int64)) for i in range(len(trg_lens))])
+            y = torch.stack([torch.from_numpy((data[begin_locs[i]+1:end_locs[i]+1]).astype(np.int64)) for i in range(len(trg_lens))])
+
+            if device_type == 'cuda':
+                # pin arrays x,y, which allows us to move them to GPU asynchronously (non_blocking=True)
+                x, y = x.pin_memory().to(device, non_blocking=True), y.pin_memory().to(device, non_blocking=True)
+            else:
+                x, y = x.to(device), y.to(device)
+
+            target_ids = y.clone()
+            for i, trg_len in enumerate(trg_lens):
+                target_ids[i, :-trg_len] = -1  # we don't want predict the first tokens.
+
+            with ctx:
+                logits, _ = model(x, y)
+                loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_ids.view(-1), ignore_index=-1)
+                neg_log_likelihood = loss
+
+            nlls.append(neg_log_likelihood)
+
+        prev_end_loc = end_locs[-1]
+        if end_locs[-1] == seq_len:
+            break
+
+    bpc = torch.stack(nlls).mean() / math.log(2) # bits per character (using log base 2)
+    return bpc
+        
+
 
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
@@ -262,7 +320,9 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
-        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+        # bpc = get_bpc()
+        bpc = losses['val'] / math.log(2)
+        print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, bpc {bpc:.4f}")
         if wandb_log:
             wandb.log({
                 "iter": iter_num,
@@ -270,6 +330,7 @@ while True:
                 "val/loss": losses['val'],
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
+                "bpc": bpc,
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']

@@ -91,16 +91,33 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
-class Block(nn.Module):
-
+class AddLearnedPositionalEmbedding(nn.Module):
     def __init__(self, config):
         super().__init__()
+        self.pos_emb = nn.Embedding(config.block_size, config.n_embd)
+
+    def forward(self, x):
+        B, T, C = x.size()  # batch size, sequence length, embedding dim
+        positions = torch.arange(0, T, dtype=torch.long, device=x.device)  # shape (t)
+        position_embeddings = self.pos_emb(positions)  # shape (t, n_embd)
+        return x + position_embeddings  # shape (B, T, C)
+
+class Block(nn.Module):
+
+    def __init__(self, config, add_pos_emb=False):
+        super().__init__()
+        if add_pos_emb:
+            self.add_pos_emb = AddLearnedPositionalEmbedding(config)
+        else:
+            self.add_pos_emb = None
         self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.mlp = MLP(config)
 
     def forward(self, x):
+        if self.add_pos_emb is not None:
+            x = self.add_pos_emb(x)
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
@@ -123,11 +140,22 @@ class GPT(nn.Module):
         assert config.block_size is not None
         self.config = config
 
+        blocks = []
+        # The first block does not add positional embeddings 
+        # because it is added in the embedding layer
+        for i in range(config.n_layer):
+            print(f"Block {i} has add_pos_emb: {i == 0}")
+            if i == 0:
+                add_pos_emb = False
+            else:
+                add_pos_emb = True
+            blocks.append(Block(config, add_pos_emb=add_pos_emb))
+
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList(blocks),
             ln_f = LayerNorm(config.n_embd, bias=config.bias),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)

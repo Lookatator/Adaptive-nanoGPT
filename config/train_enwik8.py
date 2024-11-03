@@ -1,10 +1,9 @@
-# train a miniature character-level shakespeare model
-# good for debugging and playing on macbooks and such
+# train on enwik8 dataset
 
 out_dir = 'out-enwik8-char'
-eval_interval = 250 # keep frequent because we'll overfit
+eval_interval = 1000
 eval_iters = 200
-log_interval = 10 # don't print too too often
+log_interval = 1000 # don't print too too often
 
 always_save_checkpoint = True
 
@@ -14,21 +13,21 @@ wandb_run_name = 'nano-gpt'
 
 dataset = 'enwik8'
 gradient_accumulation_steps = 1
-batch_size = 64
-block_size = 256 # context of up to 256 previous characters
+batch_size = 32
+block_size = 512 # context of up to 512 previous characters
 
 # baby GPT model :)
-n_layer = 6
-n_head = 12
-n_embd = 768
+n_layer = 12
+n_head = 2
+n_embd = 512
 dropout = 0.2
 flash = True
 
-learning_rate = 1e-3 # with baby networks can afford to go a bit higher
-max_iters = 5000
-lr_decay_iters = 5000 # make equal to max_iters usually
+learning_rate = 6e-4
+max_iters = 150000
+lr_decay_iters = 50000 # make equal to max_iters usually
 min_lr = 1e-4 # learning_rate / 10 usually
-beta2 = 0.99 # make a bit bigger because number of tokens per iter is small
+# beta2 = 0.99 # make a bit bigger because number of tokens per iter is small
 
 warmup_iters = 100 # not super necessary potentially
 
