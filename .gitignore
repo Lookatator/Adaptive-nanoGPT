@@ -1,5 +1,6 @@
 wandb/
 *.zip
+*.txt
 
 .DS_Store
 .idea

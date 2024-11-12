@@ -144,10 +144,10 @@ class GPT(nn.Module):
         # The first block does not add positional embeddings 
         # because it is added in the embedding layer
         for i in range(config.n_layer):
-            print(f"Block {i} has add_pos_emb: {i == 0}")
             if i == 0:
                 add_pos_emb = False
             else:
+                print(f"Block {i} adds positional embeddings")
                 add_pos_emb = True
             blocks.append(Block(config, add_pos_emb=add_pos_emb))
 
@@ -173,7 +173,7 @@ class GPT(nn.Module):
                 torch.nn.init.normal_(p, mean=0.0, std=0.02/math.sqrt(2 * config.n_layer))
 
         # report number of parameters
-        print("number of parameters: %.2fM" % (self.get_num_params()/1e6,))
+        print("GPT number of parameters: %.2fM" % (self.get_num_params()/1e6,))
 
     def get_num_params(self, non_embedding=True):
         """
