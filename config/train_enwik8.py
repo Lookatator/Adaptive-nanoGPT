@@ -7,10 +7,6 @@ log_interval = 1000 # don't print too too often
 
 always_save_checkpoint = True
 
-wandb_log = True # override via command line if you like
-wandb_project = 'enwik8-char'
-wandb_run_name = 'nano-gpt'
-
 dataset = 'enwik8'
 gradient_accumulation_steps = 1
 batch_size = 64
@@ -30,6 +26,13 @@ min_lr = 3e-4 # learning_rate / 10 usually
 
 warmup_iters = 100 # not super necessary potentially
 
-# on macbook also add
-# device = 'cpu'  # run on cpu only
-# compile = False # do not torch compile the model
+# use Adaptive Attention Span
+use_adaptive_attention = False
+
+# wandb logging
+wandb_log = True # override via command line if you like
+wandb_project = 'enwik8-char'
+if use_adaptive_attention:
+    wandb_run_name = 'adaptive nano-gpt'
+else:
+    wandb_run_name = 'nano-gpt'
