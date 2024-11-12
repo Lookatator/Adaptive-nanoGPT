@@ -13,7 +13,7 @@ wandb_run_name = 'nano-gpt'
 
 dataset = 'enwik8'
 gradient_accumulation_steps = 1
-batch_size = 32
+batch_size = 64
 block_size = 512 # context of up to 512 previous characters
 
 # baby GPT model :)
@@ -23,11 +23,10 @@ n_embd = 512
 dropout = 0.2
 flash = True
 
-learning_rate = 6e-4
-max_iters = 150000
-lr_decay_iters = 50000 # make equal to max_iters usually
-min_lr = 1e-4 # learning_rate / 10 usually
-# beta2 = 0.99 # make a bit bigger because number of tokens per iter is small
+learning_rate = 1e-3
+max_iters = 100000
+lr_decay_iters = 100000 # make equal to max_iters usually
+min_lr = 3e-4 # learning_rate / 10 usually
 
 warmup_iters = 100 # not super necessary potentially
 
