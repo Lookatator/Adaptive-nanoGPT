@@ -12,7 +12,7 @@ if os.path.exists('train.txt'):
     print('Tokenized enwik8 already exists - skipping processing')
     sys.exit()
 
-data = zipfile.ZipFile('enwik8.zip').read('enwik8').decode('utf-8')
+data = zipfile.ZipFile('enwik8.zip').read('enwik8').decode('latin-1')
 
 print('Length of enwik8: {}'.format(len(data)))
 
@@ -43,6 +43,17 @@ test_ids = encode(test_data)
 print(f"train has {len(train_ids):,} tokens")
 print(f"val has {len(val_ids):,} tokens")
 print(f"test has {len(test_ids):,} tokens")
+
+# Decode train, validation, and test data to text
+train_text = decode(train_ids)
+val_text = decode(val_ids)
+test_text = decode(test_ids)
+
+# Save decoded texts to files
+for data_split, text in [('train', train_text), ('val', val_text), ('test', test_text)]:
+    with open(os.path.join(os.path.dirname(__file__), f'{data_split}.txt'), 'w', encoding='utf-8') as f:
+        f.write(text)
+
 
 # export to bin files
 train_ids = np.array(train_ids, dtype=np.uint16)
