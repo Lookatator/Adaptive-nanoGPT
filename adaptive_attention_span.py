@@ -29,6 +29,9 @@ class AdaptiveCausalAttention(nn.Module):
         matrix = ((i == j) | ((i > j) & ((i - j) % S == 0))).float()
         
         return matrix
+    
+    def get_attention_span(self):
+        return torch.clamp((self.R + self.span_params) / self.R, min=0.0, max=1.0)
 
     def __init__(self, config):
         super().__init__()
