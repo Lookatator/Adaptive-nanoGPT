@@ -1,35 +1,82 @@
+import numpy as np
 from model import GPT, MLP, AddLearnedPositionalEmbedding, GPTConfig, LayerNorm
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+class TriangleWave(nn.Module):
+    """
+    Implements a triangle wave with learnable period and offset_period_ratio using sigmoid interpolation
+    f(x) = 4A/p * |((x - p/4) % p) - p/2| - A
+    where A is amplitude, p is period (learned), and offset = period * offset_period_ratio (learned)
+    offset_period_ratio is bounded between -1/4 and 1/4
+    """
+
+    def __init__(self,
+                 period_min=2.,
+                 period_max=4.0,
+                 num_waves=1):
+        super().__init__()
+
+        # Store min/max bounds
+        self.period_min = period_min
+        self.period_max = period_max
+        # Fixed bounds for offset_period_ratio
+        self.ratio_min = -0.25  # -1/4
+        self.ratio_max = 0.25  # 1/4
+
+        # Initialize learnable weights for multiple waves
+        init_period = torch.rand((num_waves,)) * (period_max - period_min) + period_min
+        init_ratios = torch.zeros((num_waves,))  # Fixed initial ratio
+
+        # Convert initial values to weight space using inverse sigmoid
+        period_weight = self._inverse_interpolate(
+            init_period, period_min, period_max)
+        ratio_weight = self._inverse_interpolate(
+            init_ratios, self.ratio_min, self.ratio_max)
+
+        # Create learnable parameters with specified number of waves
+        self.period_weight = nn.Parameter(period_weight)
+        self.ratio_weight = nn.Parameter(ratio_weight)
+
+    def _inverse_interpolate(self, value, min_val, max_val):
+        """Convert a value in real space to weight space using inverse sigmoid"""
+        normalized = (value - min_val) / (max_val - min_val)
+        return torch.logit(normalized)
+
+    def get_wave_params(self):
+        """Get the actual period and offset_period_ratio values interpolated from weights"""
+        period = self.period_min + (self.period_max - self.period_min) * torch.sigmoid(self.period_weight)
+        ratio = self.ratio_min + (self.ratio_max - self.ratio_min) * torch.sigmoid(self.ratio_weight)
+        return period, ratio
+
+    def forward(self, mask):  # mask shape: (nh, T, T)
+        # Get current period and offset_period_ratio
+        period, ratio = self.get_wave_params()  # (nh,)
+
+        # Calculate amplitude and offset based on period
+        amplitude = period / 4.  # (nh,)
+        offset = period * ratio  # (nh,)
+
+        # Compute triangle wave
+        # shifted_x = torch.fmod(mask, period.view(-1, 1, 1))  # (nh, T, T)
+        # wave = 4 * (torch.abs(shifted_x - period.view(-1, 1, 1) / 2)) * amplitude.view(-1, 1, 1) / period.view(-1, 1, 1) - amplitude.view(-1, 1, 1) + 0.5 + offset.view(-1, 1, 1)  # (nh, T, T)
+        wave = 0.5 * (torch.cos(2 * math.pi * mask / period.view(-1, 1, 1)) + 1) * amplitude.view(-1, 1, 1) + 0.5 + offset.view(-1, 1, 1)
+        
+        if torch.any(torch.isnan(wave)):
+            print(f"Warning: NaN values in triangle wave for period {period} and ratio {ratio}")
+            print(f"Wave: {wave}")
+            print(f"Mask: {mask}")
+            exit()
+
+        # Calculate loss terms
+        loss_terms = (1. / period) + (2. * ratio) - 1.0 / self.period_max - 2. * self.ratio_min
+
+        # Clamp output to [0, 1]
+        return torch.clamp(wave, min=0., max=1.), loss_terms
+
 class AdaptiveCausalAttention(nn.Module):
-    @classmethod
-    def create_special_matrix(cls, size, S):
-        """
-        Creates a square matrix with:
-        - 1's on the diagonal
-        - 1's every S entries before the diagonal
-        - 0's everywhere else
-        
-        Args:
-            size (int): Size of the square matrix
-            S (int): Spacing between 1's before the diagonal
-            
-        Returns:
-            torch.Tensor: The resulting matrix
-        """
-        # Create indices for all positions in the matrix
-        i, j = torch.meshgrid(torch.arange(size), torch.arange(size), indexing='ij')
-        
-        # Create the matrix using boolean operations:
-        # 1. Diagonal: i == j
-        # 2. Below diagonal (i > j) with spacing S: (i - j) % S == 0
-        matrix = ((i == j) | ((i > j) & ((i - j) % S == 0))).float()
-        
-        return matrix
-    
     def get_attention_span(self):
         return torch.clamp((self.R + self.span_params) / self.R, min=0.0, max=1.0)
 
@@ -58,61 +105,38 @@ class AdaptiveCausalAttention(nn.Module):
         self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                             .view(1, 1, config.block_size, config.block_size))
         
-        # stride selection parameters
-        self.strides = [1, 2]  # possible stride values
-        for stride in self.strides:
-            self.register_buffer(f"special_matrix_{stride}", 
-                                 self.create_special_matrix(config.block_size, stride)
-                                    .view(config.block_size, config.block_size))
-        self.stride_params = nn.Parameter(torch.zeros(self.n_head, 2))  # learnable stride parameters
-        self.stride_reg = 1e-6  # regularization coefficient for stride parameters
+        # Pre-compute position indices for masking
+        positions = torch.arange(config.block_size, dtype=torch.float32)
+        relative_pos = positions[:, None] - positions[None, :]  # (block_size, block_size)
         
+        # Pre-compute base causal mask
+        self.register_buffer('base_relative_pos', 
+                             relative_pos)
+        
+        self.triangle_wave = TriangleWave(period_min=2., period_max=4., num_waves=self.n_head)
 
-    def get_mask(self, span_param, max_length, device=None, stride_weights=None):
+    def get_mask(self, span_param, max_length, device=None):
         """
         Create a shifting causal mask with adaptive span and stride.
-        
-        Args:
-            span_param: float or tensor, the learned span parameter
-            max_length: int, the sequence length
-            device: torch.device, the device to create the mask on
-            stride_weights: tensor of shape (2,), weights for stride 1 and 2
         """
         T = max_length
-        # Create position indices matrix for both strides
-        positions = torch.arange(max_length, device=device, dtype=torch.float32)
         
-        # Create matrices of relative positions for both strides
-        relative_pos_1 = positions[:, None] - positions[None, :]  # stride 1
-        relative_pos_2 = positions[:, None] - positions[None, :]  # stride 2
+        # Use pre-computed relative positions, sliced to current sequence length
+        # Apply soft masking function - Use pre-computed relative positions, sliced to current sequence length
+        relative_pos = self.base_relative_pos.masked_fill(self.base_relative_pos < 0, float('inf'))[:T,:T]
+        relative_pos = torch.repeat_interleave(relative_pos.unsqueeze(0), span_param.shape[0], dim=0)  # (nh, T, T)
+        mask_pos = torch.clamp((self.R - relative_pos + span_param.view(-1, 1, 1)) / self.R, min=0.0, max=1.0)  # (nh, T, T)
         
-        # Mask future positions for both strides
-        relative_pos_1 = relative_pos_1.masked_fill(relative_pos_1 < 0, float('inf'))
-        relative_pos_2 = relative_pos_2.masked_fill(relative_pos_2 < 0, float('inf'))
+        # Apply triangle wave mask
+        relative_pos = torch.clamp(self.base_relative_pos, min=0.0,)
+        triangle_wave_mask, loss_terms_triangle_wave = self.triangle_wave(relative_pos)  #
+        if torch.any(torch.isnan(triangle_wave_mask)):
+            print("Warning: NaN values in triangle wave mask")
+        
+        # Combine mask_pos and triangle_wave_mask
+        mask = mask_pos * triangle_wave_mask
+        return mask, loss_terms_triangle_wave
 
-        relative_pos_1 = relative_pos_1.to(device)
-        relative_pos_2 = relative_pos_2.to(device)
-
-        relative_pos_1 = relative_pos_1.masked_fill(self.special_matrix_1[:T,:T] == 0, float('inf'))
-        relative_pos_2 = relative_pos_2.masked_fill(self.special_matrix_2[:T,:T] == 0, float('inf'))
-        
-        # Apply soft masking function for both strides
-        mask_1 = torch.clamp((self.R + span_param - relative_pos_1) / self.R, min=0.0, max=1.0)
-        mask_2 = torch.clamp((self.R + span_param - relative_pos_2) / self.R, min=0.0, max=1.0)
-        
-        # Combine masks using stride weights
-        # Sample mask choice using stride weights as categorical probabilities
-
-        # choice = torch.multinomial(stride_weights, 1)[0]
-        # # Create one-hot with straight-through gradient
-        # one_hot = F.one_hot(choice, num_classes=2).float().detach()
-        # one_hot = stride_weights + one_hot.detach() - stride_weights.detach()
-        # print(stride_weights.shape)
-        # Select mask using one-hot
-        # TODO: is this optimal?
-        mask = stride_weights[0] * mask_1 + stride_weights[1] * mask_2
-        
-        return mask, stride_weights
 
     def forward(self, x):
         B, T, C = x.size()  # batch size, sequence length, embedding dimensionality
@@ -125,37 +149,24 @@ class AdaptiveCausalAttention(nn.Module):
 
         # Calculate attention scores
         att = (q @ k.transpose(-2, -1)) * (1.0 / math.sqrt(k.size(-1)))  # (B, nh, T, T)
-
-        # Get stride weights using softmax
-        stride_weights = F.softmax(self.stride_params, dim=-1)
-        # print("stride_params", self.stride_params.data)
-
-        # if torch.rand(1) < 0.001:  # Print occasionally (0.1% of the time)
-        #     print("stride_params:", self.stride_params.data)
-        #     print("stride_weights:", stride_weights.data)
-        #     if self.stride_params.grad is not None:
-        #         print("stride_params grad:", self.stride_params.grad)
-        # print("stride_params", self.stride_params)
-
+        
         # Clamp span parameters between 0 and max_span using sigmoid
         clamped_spans = torch.sigmoid(self.span_params) * self.max_span
         
         # Generate and apply adaptive attention masks with stride weights
-        masks = []
-        chosen_mask_indexes = []
-        for span, stride_weight in zip(clamped_spans, stride_weights):
-            mask, one_hot = self.get_mask(span, T, device=x.device, stride_weights=stride_weight)
-            masks.append(mask)
-            chosen_mask_indexes.append(one_hot)
-        mask = torch.stack(masks)  # (nh, T, T)
-        chosen_mask_indexes = torch.stack(chosen_mask_indexes)  # (nh, 2)
+        mask, loss_terms_triangle_wave = self.get_mask(clamped_spans, T, device=x.device)
         
         # Expand mask for batch dimension
         mask = mask.unsqueeze(0).expand(B, -1, -1, -1)  # (B, nh, T, T)
         
         # Apply mask
         att = att.masked_fill(self.bias[:,:,:T,:T] == 0, float('-inf'))
-        weighted_exp_att = torch.exp(att) * mask
+        # Numerical stability: subtract max value before exp (standard log-sum-exp trick)
+        att_max = torch.max(att, dim=-1, keepdim=True)[0]
+        att_exp = torch.exp(att - att_max)
+        
+        # Apply mask after exp
+        weighted_exp_att = att_exp * mask
         att = weighted_exp_att / weighted_exp_att.sum(dim=-1, keepdim=True)
         
         # Apply dropout
@@ -169,15 +180,31 @@ class AdaptiveCausalAttention(nn.Module):
         
         # Output projection
         y = self.resid_dropout(self.c_proj(y))
-        
-        # Calculate combined regularization loss
-        # weights_stride_loss = 1. / torch.Tensor(self.strides).to(x.device) # (2,)
-        # strides_loss = chosen_mask_indexes @ weights_stride_loss.view(-1, 1)  # (nh, 1)
-        # loss_per_head = clamped_spans * strides_loss.squeeze(-1) # (nh,)
 
-        span_loss = self.span_reg * clamped_spans.sum() / self.n_head
+        if torch.any(torch.isnan(y)):
+            print("Warning: NaN values in output")
+            print(torch.max(att))
+            print(att)
+            print(mask)
+            print(weighted_exp_att)
+            exit()
         
-        return y, span_loss
+        # Calculate combined regularization loss using pre-calculated weights
+        strides_loss = loss_terms_triangle_wave.view(-1, 1)  # (nh, 1)
+        loss_per_head = (clamped_spans + self.R) * strides_loss.squeeze(-1)  # (nh,)
+        # loss_per_head = clamped_spans  # (nh,)
+
+        span_loss = self.span_reg * loss_per_head.sum() / self.n_head
+        if torch.any(torch.isnan(span_loss)):
+            print("Warning: NaN values in span loss")
+
+        # Collect extra info about spans and losses
+        extra_info = {
+            'spans': clamped_spans.detach().cpu().numpy(),  # Shape: (n_head,)
+            'triangle_wave_losses': loss_terms_triangle_wave.detach().cpu().numpy(),  # Shape: (n_head,)
+        }
+
+        return y, span_loss, extra_info
 
 class AdaptiveBlock(nn.Module):
     def __init__(self, config, add_extra_pos_emb):
@@ -194,10 +221,10 @@ class AdaptiveBlock(nn.Module):
     def forward(self, x):
         if self.add_extra_pos_emb is not None:
             x = self.add_extra_pos_emb(x)
-        attn_out, span_loss = self.attn(self.ln_1(x))
+        attn_out, span_loss, extra_info_attn = self.attn(self.ln_1(x))
         x = x + attn_out
         x = x + self.mlp(self.ln_2(x))
-        return x, span_loss
+        return x, span_loss, extra_info_attn
 
 class AdaptiveGPT(GPT):
     def __init__(self, config):
@@ -248,10 +275,22 @@ class AdaptiveGPT(GPT):
         
         # Accumulate span losses from all blocks
         total_span_loss = 0
+        extra_info_list = []
         for block in self.transformer.h:
-            x, span_loss = block(x)
+            x, span_loss, extra_info_block = block(x)
             total_span_loss += span_loss
-            
+            extra_info_list.append(extra_info_block)
+
+        # Concatenate all dictionaries from extra_info_block
+        combined_extra_info = {}
+        for block_info in extra_info_list:
+            for key, value in block_info.items():
+                if key not in combined_extra_info:
+                    combined_extra_info[key] = value
+                else:
+                    combined_extra_info[key] = np.concatenate([combined_extra_info[key], value])
+        extra_info = combined_extra_info
+
         x = self.transformer.ln_f(x)
 
         if targets is not None:
@@ -264,7 +303,7 @@ class AdaptiveGPT(GPT):
             logits = self.lm_head(x[:, [-1], :])
             loss = None
 
-        return logits, loss
+        return logits, loss, extra_info
 
 if __name__ == "__main__":
     # test get mask

@@ -21,10 +21,12 @@ import time
 import math
 import pickle
 from contextlib import nullcontext
+from typing import Union
 
 import numpy as np
 from adaptive_attention_span import AdaptiveGPT
 import torch
+
 import torch.nn.functional as F
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
@@ -179,7 +181,7 @@ def get_bpc():
                 target_ids[i, :-trg_len] = -1  # we don't want predict the first tokens.
 
             with ctx:
-                logits, _ = model(x, y)
+                logits, _, _ = model(x, y)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_ids.view(-1), ignore_index=-1)
                 neg_log_likelihood = loss
 
@@ -295,11 +297,18 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
-                logits, loss = model(X, Y, add_span_loss=False)
+                logits, loss, _ = model(X, Y, add_span_loss=False)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
     return out
+
+def get_extra_info():
+    model.eval()
+    X, Y = get_batch('train')
+    _, _, extra_info_split = model(X, Y, add_span_loss=True)
+    model.train()
+    return extra_info_split
 
 # learning rate decay scheduler (cosine with warmup)
 def get_lr(it):
@@ -336,6 +345,14 @@ while True:
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
+        extra_info = get_extra_info()
+        extra_info_wandb = {}
+        for key, value in extra_info.items():
+            print(f"{key}: {value}")
+            if isinstance(value, Union[np.ndarray, list]):
+                extra_info_wandb[key] = wandb.Histogram(value)
+            else:
+                extra_info_wandb[key] = value
         # bpc = get_bpc()
         bpc = losses['val'] / math.log(2)
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}, bpc {bpc:.4f}")
@@ -347,6 +364,7 @@ while True:
                 "lr": lr,
                 "mfu": running_mfu*100, # convert to percentage
                 "bpc": bpc,
+                **extra_info_wandb,
             })
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
@@ -374,7 +392,7 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss = model(X, Y)
+            logits, loss, _ = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')
