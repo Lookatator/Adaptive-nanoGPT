@@ -34,9 +34,14 @@ from torch.distributed import init_process_group, destroy_process_group
 from model import GPTConfig, GPT
 
 # -----------------------------------------------------------------------------
+# use Adaptive Attention Span
+use_adaptive_attention = False
+softness_span_mask = 32
+span_reg = 2e-6
+
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
-out_dir = 'out'
+out_dir = f'out_{time.strftime("%Y%m%d_%H%M%S")}_{"adaptive_span" if use_adaptive_attention else "causal"}'
 eval_interval = 2000
 log_interval = 1
 eval_iters = 200
@@ -71,9 +76,6 @@ warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
 
-
-# use Adaptive Attention Span
-use_adaptive_attention = False
 
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
@@ -211,7 +213,8 @@ if os.path.exists(meta_path):
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, dropout=dropout) # start with model_args from command line
+                  bias=bias, vocab_size=None, dropout=dropout, use_adaptive_attention=use_adaptive_attention,
+                  softness_span_mask=softness_span_mask, span_reg=span_reg) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")

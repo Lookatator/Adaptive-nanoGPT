@@ -1,6 +1,8 @@
 # train on enwik8 dataset
 
-out_dir = 'out-enwik8-char'
+import time
+
+
 eval_interval = 1000
 eval_iters = 200
 log_interval = 1000 # don't print too too often
@@ -31,7 +33,9 @@ beta2 = 0.99 # make a bit bigger because number of tokens per iter is small
 warmup_iters = 100 # not super necessary potentially
 
 # use Adaptive Attention Span
-use_adaptive_attention = False
+use_adaptive_attention = True
+softness_span_mask = 32
+span_reg = 2e-6
 
 # wandb logging
 wandb_log = True # override via command line if you like
@@ -40,3 +44,5 @@ if use_adaptive_attention:
     wandb_run_name = 'adaptive nano-gpt'
 else:
     wandb_run_name = 'nano-gpt'
+
+out_dir = f'results/out_{time.strftime("%Y%m%d_%H%M%S")}_{"adaptive_span" if use_adaptive_attention else "causal"}'
