@@ -43,7 +43,7 @@ period_max_triangle_wave = 8.0
 
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
-out_dir = f'results/out_{time.strftime("%Y%m%d_%H%M%S")}_{"adaptive_span" if use_adaptive_attention else "causal"}'
+out_dir = f'results/out_{time.strftime("%Y%m%d_%H%M%S")}'
 eval_interval = 2000
 log_interval = 1
 eval_iters = 200
@@ -185,7 +185,7 @@ def get_bpc():
                 target_ids[i, :-trg_len] = -1  # we don't want predict the first tokens.
 
             with ctx:
-                logits, _, _ = model(x, y)
+                logits, _, _ = model(x, targets=y)
                 loss = F.cross_entropy(logits.view(-1, logits.size(-1)), target_ids.view(-1), ignore_index=-1)
                 neg_log_likelihood = loss
 
@@ -303,7 +303,7 @@ def estimate_loss():
         for k in range(eval_iters):
             X, Y = get_batch(split)
             with ctx:
-                logits, loss, _ = model(X, Y, add_span_loss=False)
+                logits, loss, _ = model(X, targets=Y, add_span_loss=False)
             losses[k] = loss.item()
         out[split] = losses.mean()
     model.train()
@@ -312,7 +312,7 @@ def estimate_loss():
 def get_extra_info():
     model.eval()
     X, Y = get_batch('train')
-    _, _, extra_info_split = model(X, Y, add_span_loss=True)
+    _, _, extra_info_split = model(X, targets=Y, add_span_loss=True)
     model.train()
 
     # Sum up the adaptive span loss across all layers.
@@ -402,7 +402,7 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
         with ctx:
-            logits, loss, _ = model(X, Y)
+            logits, loss, _ = model(X, targets=Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
         X, Y = get_batch('train')

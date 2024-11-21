@@ -47,4 +47,4 @@ if use_adaptive_attention:
 else:
     wandb_run_name = 'nano-gpt'
 
-out_dir = f'results/out_{time.strftime("%Y%m%d_%H%M%S")}_{"adaptive_span" if use_adaptive_attention else "causal"}'
+out_dir = f'results/out_{time.strftime("%Y%m%d_%H%M%S")}'
