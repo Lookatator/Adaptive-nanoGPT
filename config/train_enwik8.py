@@ -36,6 +36,8 @@ warmup_iters = 100 # not super necessary potentially
 use_adaptive_attention = True
 softness_span_mask = 32
 span_reg = 2e-6
+period_min_triangle_wave = 2.0
+period_max_triangle_wave = 8.0
 
 # wandb logging
 wandb_log = True # override via command line if you like

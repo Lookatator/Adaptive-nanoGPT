@@ -38,10 +38,12 @@ from model import GPTConfig, GPT
 use_adaptive_attention = False
 softness_span_mask = 32
 span_reg = 2e-6
+period_min_triangle_wave = 2.0
+period_max_triangle_wave = 8.0
 
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
-out_dir = f'out_{time.strftime("%Y%m%d_%H%M%S")}_{"adaptive_span" if use_adaptive_attention else "causal"}'
+out_dir = f'results/out_{time.strftime("%Y%m%d_%H%M%S")}_{"adaptive_span" if use_adaptive_attention else "causal"}'
 eval_interval = 2000
 log_interval = 1
 eval_iters = 200
@@ -214,7 +216,8 @@ if os.path.exists(meta_path):
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
                   bias=bias, vocab_size=None, dropout=dropout, use_adaptive_attention=use_adaptive_attention,
-                  softness_span_mask=softness_span_mask, span_reg=span_reg) # start with model_args from command line
+                  softness_span_mask=softness_span_mask, span_reg=span_reg, period_min_triangle_wave=period_min_triangle_wave,
+                  period_max_triangle_wave=period_max_triangle_wave,) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -311,6 +314,10 @@ def get_extra_info():
     X, Y = get_batch('train')
     _, _, extra_info_split = model(X, Y, add_span_loss=True)
     model.train()
+
+    # Sum up the adaptive span loss across all layers.
+    if 'adaptive_span_loss' in extra_info_split:
+        extra_info_split['adaptive_span_loss'] = np.sum(extra_info_split['adaptive_span_loss'])
     return extra_info_split
 
 # learning rate decay scheduler (cosine with warmup)

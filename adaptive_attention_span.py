@@ -47,7 +47,7 @@ class TriangleWave(nn.Module):
 
     def __init__(self,
                  period_min=2.,
-                 period_max=4.0,
+                 period_max=8.0,
                  num_waves=1):
         super().__init__()
 
@@ -92,14 +92,8 @@ class TriangleWave(nn.Module):
         offset = period * ratio  # (nh,)
 
         # Compute triangle wave
-        # shifted_x = torch.fmod(mask, period.view(-1, 1, 1))  # (nh, T, T)
-        # wave = 4 * (torch.abs(shifted_x - period.view(-1, 1, 1) / 2)) * amplitude.view(-1, 1, 1) / period.view(-1, 1, 1) - amplitude.view(-1, 1, 1) + 0.5 + offset.view(-1, 1, 1)  # (nh, T, T)
-        # wave = 0.5 * (torch.cos(2 * math.pi * mask / period.view(-1, 1, 1)) + 1) * amplitude.view(-1, 1, 1) + 0.5 + offset.view(-1, 1, 1)
-        wave = 0.8 * (torch.cos(2 * math.pi * mask / period.view(-1, 1, 1))) * amplitude.view(-1, 1, 1) + 0.5 + offset.view(-1, 1, 1)  # First harmonic Fourier series approximation
-
-        
-        # wave = self.approximate_triangle_wave(mask, period, amplitude, max_harmonics=1)
-        # wave = wave + 0.5 + offset[..., None, None]
+        wave = self.approximate_triangle_wave(mask, period, amplitude, max_harmonics=5)
+        wave = wave + 0.5 + offset[..., None, None]
         
         if torch.any(torch.isnan(wave)):
             print(f"Warning: NaN values in triangle wave for period {period} and ratio {ratio}")
@@ -112,7 +106,7 @@ class TriangleWave(nn.Module):
         loss_terms = torch.where(
             base_terms < 1.0,
             base_terms,
-            1.0 + (ratio - self.ratio_min) * period
+            1.0 + (0.5 + offset - amplitude),
         )
 
         # Clamp output to [0, 1]
@@ -156,7 +150,9 @@ class AdaptiveCausalAttention(nn.Module):
         self.register_buffer('base_relative_pos', 
                              relative_pos)
         
-        self.triangle_wave = TriangleWave(period_min=2., period_max=4., num_waves=self.n_head)
+        self.triangle_wave = TriangleWave(period_min=config.period_min_triangle_wave, 
+                                          period_max=config.period_max_triangle_wave, 
+                                          num_waves=self.n_head)
 
     def get_mask(self, span_param, max_length, device=None):
         """
@@ -235,7 +231,8 @@ class AdaptiveCausalAttention(nn.Module):
         
         # Calculate combined regularization loss using pre-calculated weights
         strides_loss = loss_terms_triangle_wave.view(-1, 1)  # (nh, 1)
-        loss_per_head = (clamped_spans + self.R) * strides_loss.squeeze(-1)  # (nh,)
+        clamped_spans_with_R = clamped_spans + self.R
+        loss_per_head = clamped_spans_with_R * strides_loss.squeeze(-1)  # (nh,)
         # loss_per_head = clamped_spans  # (nh,)
 
         span_loss = self.span_reg * loss_per_head.sum() / self.n_head
@@ -245,12 +242,12 @@ class AdaptiveCausalAttention(nn.Module):
         # Collect extra info about spans and losses
         periods, ratios = self.triangle_wave.get_wave_params()
         offsets = ratios * periods
-        clamped_spans_with_R = clamped_spans + self.R
         extra_info = {
             'clamped_spans': clamped_spans_with_R.detach().cpu().numpy(),  # Shape: (n_head,)
             'triangle_wave_losses': loss_terms_triangle_wave.detach().cpu().numpy(),  # Shape: (n_head,)
             'triangle_wave_periods': periods.detach().cpu().numpy(),  # Shape: (n_head,)
             'triangle_wave_offsets': offsets.detach().cpu().numpy(),  # Shape: (n_head,)
+            'adaptive_span_loss': span_loss.detach().cpu().numpy().reshape(1,),  # Shape: (1,)
         }
 
         return y, span_loss, extra_info

@@ -54,7 +54,7 @@ def load_and_inspect_model(checkpoint_path, is_adaptive=False):
     for index_block, block in enumerate(model.transformer.h):
         attn = block.attn
         print(f"\nBlock {index_block} Attention Span {index_block} - {attn.get_attention_span()}")
-        print(f"Block {index_block} Attention Stride {index_block} - {attn.stride_params}")
+        #  print(f"Block {index_block} Attention Stride {index_block} - {attn.stride_params}")
     
     return model
 
