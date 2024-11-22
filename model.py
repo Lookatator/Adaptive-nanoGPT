@@ -134,8 +134,9 @@ class GPTConfig:
     use_adaptive_attention: bool = False
     softness_span_mask: int = 32
     span_reg: float = 2e-6
-    period_min_triangle_wave: float = 2.0
-    period_max_triangle_wave: float = 8.0
+    period_min_triangle_wave_masking: float = 2.0
+    period_max_triangle_wave_masking: float = 8.0
+    use_triangle_wave_masking: bool = True
 
 class GPT(nn.Module):
 

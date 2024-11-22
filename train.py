@@ -38,8 +38,9 @@ from model import GPTConfig, GPT
 use_adaptive_attention = False
 softness_span_mask = 32
 span_reg = 2e-6
-period_min_triangle_wave = 2.0
-period_max_triangle_wave = 8.0
+period_min_triangle_wave_masking = 2.0
+period_max_triangle_wave_masking = 8.0
+use_triangle_wave_masking = True
 
 # default config values designed to train a gpt2 (124M) on OpenWebText
 # I/O
@@ -214,10 +215,20 @@ if os.path.exists(meta_path):
     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
 # model init
-model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, vocab_size=None, dropout=dropout, use_adaptive_attention=use_adaptive_attention,
-                  softness_span_mask=softness_span_mask, span_reg=span_reg, period_min_triangle_wave=period_min_triangle_wave,
-                  period_max_triangle_wave=period_max_triangle_wave,) # start with model_args from command line
+model_args = dict(n_layer=n_layer,
+                  n_head=n_head, 
+                  n_embd=n_embd,
+                  block_size=block_size,
+                  bias=bias,
+                  vocab_size=None,
+                  dropout=dropout,
+                  use_adaptive_attention=use_adaptive_attention,
+                  softness_span_mask=softness_span_mask,
+                  span_reg=span_reg,
+                  period_min_triangle_wave_masking=period_min_triangle_wave_masking,
+                  period_max_triangle_wave_masking=period_max_triangle_wave_masking,
+                  use_triangle_wave_masking=use_triangle_wave_masking
+                  )
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
