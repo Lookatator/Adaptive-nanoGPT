@@ -146,13 +146,41 @@ class AdaptiveCausalAttention(nn.Module):
         # Only create triangle wave masking if we're using it
         if self.use_triangle_wave_masking:
             self.triangle_wave = TriangleWave(period_min=config.period_min_triangle_wave_masking, 
-                                                    period_max=config.period_max_triangle_wave_masking, 
-                                                    num_waves=self.n_head)
+                                              period_max=config.period_max_triangle_wave_masking, 
+                                              num_waves=self.n_head)
         else:
             self.triangle_wave = None
 
     def get_attention_span(self):
-        return torch.clamp((self.R + self.span_params) / self.R, min=0.0, max=1.0)
+        clamped_spans = torch.sigmoid(self.span_params) * self.max_span + self.R
+        return torch.floor(torch.clamp(clamped_spans, min=0.0, max=self.max_span))
+    
+    def get_triangle_wave_mask(self):
+        if not self.use_triangle_wave_masking:
+            return None
+            
+        # Generate positions from 0 to max_length-1
+        positions = torch.arange(self.max_span, dtype=torch.float32, device=self.span_params.device)
+        
+        # Apply triangle wave to positions
+        triangle_mask, _ = self.triangle_wave(positions.unsqueeze(0).unsqueeze(-1))
+
+        return triangle_mask.squeeze(0)
+    
+    def get_non_masked_tokens(self):
+        if not self.use_triangle_wave_masking:
+            return None
+        
+        attention_span = self.get_attention_span()
+        positions = torch.arange(self.max_span, dtype=torch.float32, device=self.span_params.device)
+        positions = positions.unsqueeze(0).expand(attention_span.shape[0], -1)
+        attention_span = attention_span.unsqueeze(-1).expand(-1, positions.shape[1])
+        masked_positions = positions.clone()
+        masked_positions[positions > attention_span] = 0.0
+        masked_positions[positions <= attention_span] = 1.0
+
+        # count number of zeros in mask
+        return self.get_triangle_wave_mask().squeeze(-1) * masked_positions 
 
     def get_span_mask(self, span_param, max_length):
         """
@@ -222,8 +250,8 @@ class AdaptiveCausalAttention(nn.Module):
 
         # calculate values
         att = F.softmax(weighted_att, dim=-1)
-        att = self.attn_dropout(att)
-        y = att @ v  # (B, nh, T, hs)
+        att_dropout = self.attn_dropout(att)
+        y = att_dropout @ v  # (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C)
         
         # Output projection
@@ -245,6 +273,7 @@ class AdaptiveCausalAttention(nn.Module):
         extra_info = {
             'clamped_spans': clamped_spans_with_R.detach().cpu().numpy(),  # Shape: (n_head,)
             'adaptive_span_loss': adaptive_span_regularization_loss.detach().cpu().numpy().reshape(1,),  # Shape: (1,)
+            'attention_weights': weighted_att[:, :, -1, :].mean(dim=0).detach().cpu().numpy()  # Shape: (nh, T)
         }
 
         if self.use_triangle_wave_masking:

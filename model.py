@@ -120,7 +120,7 @@ class Block(nn.Module):
             x = self.add_pos_emb(x)
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
-        return x
+        return x, {}
 
 @dataclass
 class GPTConfig:
@@ -212,7 +212,7 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
-            x = block(x)
+            x, extra_info = block(x)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
