@@ -107,6 +107,18 @@ class TriangleWave(nn.Module):
         return torch.clamp(wave, min=0., max=1.), loss_terms
 
 class AdaptiveCausalAttention(nn.Module):
+    """Adaptive causal attention layer that extends standard attention with learnable attention spans.
+    
+    This layer implements both adaptive attention span (Sukhbaatar et al., 2019) and optional
+    triangle wave masking for periodic attention patterns. The attention span for each head is learned
+    during training, allowing the model to adaptively focus on relevant context lengths.
+    
+    Key features:
+    - Learnable attention span parameters per attention head
+    - Optional triangle wave masking for periodic attention patterns
+    - Regularization to encourage shorter attention spans
+    - Maintains causal structure (each token only attends to previous tokens)
+    """
     def __init__(self, config):
         super().__init__()
         assert config.n_embd % config.n_head == 0
@@ -286,6 +298,9 @@ class AdaptiveCausalAttention(nn.Module):
         return y, adaptive_span_regularization_loss, extra_info
 
 class AdaptiveBlock(nn.Module):
+    """
+    A single block of the adaptive GPT model.
+    """
     def __init__(self, config, add_extra_pos_emb):
         super().__init__()
         if add_extra_pos_emb:
@@ -306,6 +321,9 @@ class AdaptiveBlock(nn.Module):
         return x, span_loss, extra_info_attn
 
 class AdaptiveGPT(GPT):
+    """
+    The adaptive GPT model.
+    """
     def __init__(self, config):
         super().__init__(config)
         blocks = []

@@ -371,7 +371,10 @@ while True:
         for key, value in extra_info.items():
             print(f"{key}: {value}")
             if isinstance(value, Union[np.ndarray, list]):
-                extra_info_wandb[key] = wandb.Histogram(value)
+                if len(value) > 0 \
+                    and not np.any(np.isinf(value)) \
+                    and not np.any(np.isnan(value)):
+                    extra_info_wandb[key] = wandb.Histogram(value)
             else:
                 extra_info_wandb[key] = value
         # bpc = get_bpc()
